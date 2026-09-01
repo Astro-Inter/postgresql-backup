@@ -1,0 +1,147 @@
+name: Backup PostgreSQL
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions usa UTC. 06:17 UTC corresponde a 03:17 em America/Sao_Paulo.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-postgresql-astro
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Gerar e armazenar backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      AIVEN_PG_HOST: ${{ secrets.AIVEN_PG_HOST }}
+      AIVEN_PG_PORT: ${{ secrets.AIVEN_PG_PORT }}
+      AIVEN_PG_DATABASE: ${{ secrets.AIVEN_PG_DATABASE }}
+      AIVEN_PG_USER: ${{ secrets.AIVEN_PG_USER }}
+      PGPASSWORD: ${{ secrets.AIVEN_PG_PASSWORD }}
+      PGSSLMODE: require
+
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+
+      BACKUP_RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS || '7' }}
+
+    steps:
+      - name: Obter codigo do repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar clientes PostgreSQL e AWS
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client awscli
+          pg_dump --version
+          pg_restore --version
+          aws --version
+
+      - name: Validar configuracoes obrigatorias
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_variables=(
+            AIVEN_PG_HOST
+            AIVEN_PG_PORT
+            AIVEN_PG_DATABASE
+            AIVEN_PG_USER
+            PGPASSWORD
+            R2_ACCESS_KEY_ID
+            R2_SECRET_ACCESS_KEY
+            R2_ENDPOINT
+            R2_BUCKET_NAME
+          )
+
+          for variable_name in "${required_variables[@]}"; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Configuracao obrigatoria ausente: ${variable_name}"
+              exit 1
+            fi
+          done
+
+          echo "Configuracoes obrigatorias presentes. Os valores permanecem protegidos."
+
+      - name: Definir nome do backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          timestamp="$(TZ=America/Sao_Paulo date +'%Y-%m-%d_%H-%M-%S')"
+          backup_name="astro_${timestamp}.dump"
+          backup_file="${RUNNER_TEMP}/${backup_name}"
+          object_key="postgresql/${backup_name}"
+
+          {
+            echo "BACKUP_NAME=${backup_name}"
+            echo "BACKUP_FILE=${backup_file}"
+            echo "BACKUP_OBJECT_KEY=${object_key}"
+          } >> "$GITHUB_ENV"
+
+          echo "Inicio do backup: $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z')"
+          echo "Arquivo: ${backup_name}"
+
+      - name: Gerar backup logico
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pg_dump \
+            --host="$AIVEN_PG_HOST" \
+            --port="$AIVEN_PG_PORT" \
+            --username="$AIVEN_PG_USER" \
+            --dbname="$AIVEN_PG_DATABASE" \
+            --format=custom \
+            --no-password \
+            --file="$BACKUP_FILE"
+
+          [[ -f "$BACKUP_FILE" ]] || {
+            echo "::error::O pg_dump terminou sem criar o arquivo de backup."
+            exit 1
+          }
+
+          [[ -s "$BACKUP_FILE" ]] || {
+            echo "::error::O pg_dump criou um arquivo vazio."
+            exit 1
+          }
+
+          backup_size_bytes="$(stat --format='%s' "$BACKUP_FILE")"
+          backup_size_human="$(du --human-readable "$BACKUP_FILE" | cut -f1)"
+          echo "pg_dump concluido com sucesso."
+          echo "Tamanho do backup: ${backup_size_human} (${backup_size_bytes} bytes)"
+
+      - name: Enviar backup ao Cloudflare R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/upload_backup.sh "$BACKUP_FILE" "$BACKUP_OBJECT_KEY"
+
+      - name: Registrar resultado
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Backup concluido com sucesso."
+          echo "Objeto armazenado: ${BACKUP_OBJECT_KEY}"
+          echo "Horario de conclusao: $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z')"
+
+      - name: Remover arquivo temporario do runner
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${BACKUP_FILE:-}" && -f "$BACKUP_FILE" ]]; then
+            rm -- "$BACKUP_FILE"
+          fi
