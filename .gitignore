@@ -1,0 +1,6 @@
+# Credenciais locais
+.env
+
+# Dumps locais podem conter dados sensiveis
+*.dump
+
