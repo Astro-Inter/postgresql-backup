@@ -36,6 +36,7 @@ jobs:
       AWS_DEFAULT_REGION: auto
 
       BACKUP_RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS || '7' }}
+      POSTGRESQL_CLIENT_MAJOR: "17"
 
     steps:
       - name: Obter codigo do repositorio
@@ -46,7 +47,19 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends postgresql-client
+          sudo apt-get install --yes --no-install-recommends postgresql-common ca-certificates
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install --yes --no-install-recommends "postgresql-client-${POSTGRESQL_CLIENT_MAJOR}"
+
+          postgresql_bin="/usr/lib/postgresql/${POSTGRESQL_CLIENT_MAJOR}/bin"
+          [[ -x "${postgresql_bin}/pg_dump" ]] || {
+            echo "::error::pg_dump ${POSTGRESQL_CLIENT_MAJOR} nao foi instalado corretamente."
+            exit 1
+          }
+
+          echo "$postgresql_bin" >> "$GITHUB_PATH"
+          export PATH="${postgresql_bin}:${PATH}"
+
           pg_dump --version
           pg_restore --version
           command -v aws >/dev/null 2>&1 || {
