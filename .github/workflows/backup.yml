@@ -124,6 +124,13 @@ jobs:
           echo "pg_dump concluido com sucesso."
           echo "Tamanho do backup: ${backup_size_human} (${backup_size_bytes} bytes)"
 
+      - name: Validar integridade do arquivo
+        shell: bash
+        run: |
+          set -euo pipefail
+          pg_restore --list "$BACKUP_FILE" >/dev/null
+          echo "Arquivo reconhecido pelo pg_restore como PostgreSQL custom dump."
+
       - name: Enviar backup ao Cloudflare R2
         shell: bash
         run: |
