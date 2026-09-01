@@ -130,6 +130,12 @@ jobs:
           set -euo pipefail
           bash scripts/upload_backup.sh "$BACKUP_FILE" "$BACKUP_OBJECT_KEY"
 
+      - name: Aplicar politica de retencao
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/apply_retention.sh "$BACKUP_OBJECT_KEY"
+
       - name: Registrar resultado
         shell: bash
         run: |
