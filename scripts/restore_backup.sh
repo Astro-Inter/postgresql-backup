@@ -3,15 +3,29 @@
 set -Eeuo pipefail
 
 readonly R2_PREFIX="postgresql/"
+readonly OPERATION="backup-restore"
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/observability.sh
+source "${script_directory}/observability.sh"
+otel_init "restore"
 
 log() {
-  printf '[Restauracao] %s\n' "$*"
+  otel_log INFO "$*" "$OPERATION"
 }
 
 fail() {
-  printf '[Restauracao] ERRO: %s\n' "$*" >&2
+  otel_log ERROR "$*" "$OPERATION" error >&2
   exit 1
 }
+
+unexpected_error() {
+  local exit_code=$?
+  trap - ERR
+  otel_log ERROR "Restauracao interrompida por erro inesperado" "$OPERATION" error >&2
+  exit "$exit_code"
+}
+trap unexpected_error ERR
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "comando obrigatorio nao encontrado: $1"
@@ -99,4 +113,4 @@ pg_restore \
   --exit-on-error \
   "$local_backup"
 
-log "Restauracao concluida sem erros"
+otel_log INFO "Restauracao concluida sem erros" "$OPERATION" success

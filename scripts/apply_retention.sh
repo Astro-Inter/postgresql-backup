@@ -3,15 +3,29 @@
 set -Eeuo pipefail
 
 readonly R2_PREFIX="postgresql/"
+readonly OPERATION="backup-retention"
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/observability.sh
+source "${script_directory}/observability.sh"
+otel_init "retention"
 
 log() {
-  printf '[Retencao] %s\n' "$*"
+  otel_log INFO "$*" "$OPERATION"
 }
 
 fail() {
-  printf '[Retencao] ERRO: %s\n' "$*" >&2
+  otel_log ERROR "$*" "$OPERATION" error >&2
   exit 1
 }
+
+unexpected_error() {
+  local exit_code=$?
+  trap - ERR
+  otel_log ERROR "Retencao interrompida por erro inesperado" "$OPERATION" error >&2
+  exit "$exit_code"
+}
+trap unexpected_error ERR
 
 require_variable() {
   local variable_name="$1"
@@ -76,4 +90,4 @@ while IFS=$'\t' read -r object_key last_modified; do
   fi
 done <<< "$objects"
 
-log "Retencao concluida: ${removed_count} backup(s) removido(s); janela de ${retention_days} dia(s)"
+otel_log INFO "Retencao concluida: ${removed_count} backup(s) removido(s); janela de ${retention_days} dia(s)" "$OPERATION" success
