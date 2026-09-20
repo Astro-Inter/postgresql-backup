@@ -4,3 +4,6 @@
 # Dumps locais podem conter dados sensiveis
 *.dump
 
+# Cache local do exportador Python
+__pycache__/
+*.py[cod]

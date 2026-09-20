@@ -3,15 +3,29 @@
 set -Eeuo pipefail
 
 readonly R2_PREFIX="postgresql"
+readonly OPERATION="backup-upload"
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/observability.sh
+source "${script_directory}/observability.sh"
+otel_init "r2-upload"
 
 log() {
-  printf '[R2] %s\n' "$*"
+  otel_log INFO "$*" "$OPERATION"
 }
 
 fail() {
-  printf '[R2] ERRO: %s\n' "$*" >&2
+  otel_log ERROR "$*" "$OPERATION" error >&2
   exit 1
 }
+
+unexpected_error() {
+  local exit_code=$?
+  trap - ERR
+  otel_log ERROR "Upload interrompido por erro inesperado" "$OPERATION" error >&2
+  exit "$exit_code"
+}
+trap unexpected_error ERR
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "comando obrigatorio nao encontrado: $1"
@@ -61,7 +75,7 @@ aws s3api head-object \
   --endpoint-url "$R2_ENDPOINT" \
   --output json >/dev/null
 
-log "Upload confirmado no Cloudflare R2"
+otel_log INFO "Upload confirmado no Cloudflare R2" "$OPERATION" success
 aws s3 ls \
   "s3://${R2_BUCKET_NAME}/${object_key}" \
   --endpoint-url "$R2_ENDPOINT"

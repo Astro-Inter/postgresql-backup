@@ -2,14 +2,29 @@
 
 set -Eeuo pipefail
 
+readonly OPERATION="recovery-test"
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/observability.sh
+source "${script_directory}/observability.sh"
+otel_init "recovery-test"
+
 log() {
-  printf '[Teste de recuperacao] %s\n' "$*"
+  otel_log INFO "$*" "$OPERATION"
 }
 
 fail() {
-  printf '[Teste de recuperacao] ERRO: %s\n' "$*" >&2
+  otel_log ERROR "$*" "$OPERATION" error >&2
   exit 1
 }
+
+unexpected_error() {
+  local exit_code=$?
+  trap - ERR
+  otel_log ERROR "Teste de recuperacao interrompido por erro inesperado" "$OPERATION" error >&2
+  exit "$exit_code"
+}
+trap unexpected_error ERR
 
 require_variable() {
   local variable_name="$1"
@@ -65,7 +80,6 @@ existing_tables="${existing_tables//$'\r'/}"
 [[ "$existing_tables" =~ ^[0-9]+$ ]] || fail "nao foi possivel validar o estado inicial do banco"
 (( existing_tables == 0 )) || fail "o banco de teste deve estar vazio antes da restauracao"
 
-script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 bash "${script_directory}/restore_backup.sh" "$backup_reference"
 
 log "Verificando objetos restaurados"
@@ -94,4 +108,4 @@ actual_result="${actual_result//$'\r'/}"
   fail "a verificacao de dados nao retornou o resultado esperado"
 }
 
-log "Teste de recuperacao concluido com estrutura e dados validados"
+otel_log INFO "Teste de recuperacao concluido com estrutura e dados validados" "$OPERATION" success

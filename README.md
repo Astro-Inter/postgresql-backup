@@ -115,6 +115,50 @@ Os valores não ficam no código. No workflow, `R2_ACCESS_KEY_ID` e `R2_SECRET_A
 
 Para configuração local, copie [`.env.example`](.env.example) para `.env` e preencha somente no seu ambiente. O arquivo `.env` está ignorado pelo Git e nunca deve ser commitado. Não use credenciais de produção em demonstrações ou arquivos compartilhados.
 
+### Observabilidade
+
+Este projeto usa OpenTelemetry para enviar logs estruturados ao Grafana Cloud pelo protocolo OTLP/HTTP. O identificador fixo do serviço é `service.name=postgresql-backup`. O ambiente é determinado automaticamente como `production` no GitHub Actions e `local` nas demais execuções. Os eventos também incluem `job.name`, `worker.name`, `operation`, `status` e, quando aplicável, `service.version` e `duration_ms`.
+
+Os logs continuam sendo escritos no console em JSON, inclusive quando a exportação não está configurada. O envio ao Grafana é habilitado somente quando as duas variáveis abaixo possuem valor:
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT
+OTEL_EXPORTER_OTLP_HEADERS
+```
+
+O exportador usa Python 3.10 ou superior e os pacotes oficiais `opentelemetry-sdk` e `opentelemetry-exporter-otlp-proto-http`, fixados em `requirements-observability.txt`. O workflow prepara um Python conhecido e só instala essas dependências quando as duas configurações do Grafana estão presentes. Sem elas, ou sem o runtime Python e os pacotes, os scripts continuam operando apenas com o log local.
+
+O endpoint deve ser a URL base OTLP fornecida pelo Grafana Cloud, normalmente terminada em `/otlp`, sem acrescentar `/v1/logs`. O exporter oficial deriva desse valor o endpoint específico de logs, conforme o padrão OpenTelemetry. `OTEL_EXPORTER_OTLP_HEADERS` segue o formato padrão, por exemplo `Authorization=Basic%20...`; o valor real nunca deve ser colocado no repositório. Falhas temporárias de exportação geram um aviso no console, mas não interrompem o backup.
+
+No GitHub, cadastre em **Settings → Secrets and variables → Actions** estes Repository Secrets:
+
+```text
+GRAFANA_OTLP_ENDPOINT  # valor de OTEL_EXPORTER_OTLP_ENDPOINT fornecido pelo Grafana
+GRAFANA_OTLP_HEADERS   # valor de OTEL_EXPORTER_OTLP_HEADERS fornecido pelo Grafana
+```
+
+O workflow faz o mapeamento para as variáveis `OTEL_EXPORTER_OTLP_*`. Em execução local, elas são opcionais. Para testar somente o logging de console:
+
+```bash
+unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
+bash scripts/otel_log.sh INFO "Teste local de observabilidade" observability-test success
+```
+
+Para validar o console e o acionamento opcional do exportador sem acessar o Grafana nem usar credenciais reais:
+
+```bash
+bash scripts/test_observability.sh
+```
+
+Para validar também o payload Protobuf, o caminho `/v1/logs`, os headers e os atributos contra um servidor HTTP local simulado:
+
+```bash
+python -m pip install -r requirements-observability.txt
+python scripts/test_otel_export.py
+```
+
+Para um teste integrado, configure as duas variáveis com as credenciais do Grafana Cloud e execute o comando de teste local. No Grafana, abra **Drilldown → Logs** ou **Explore**, selecione a fonte de logs e filtre por `service_name="postgresql-backup"`. O Grafana normaliza pontos para sublinhados ao armazenar atributos OTLP no Loki. Confirme que a mensagem aparece com os metadados `severity_text`, `deployment_environment`, `worker_name`, `operation` e `status`. Em GitHub Actions, também é possível executar o workflow manualmente e procurar por `operation=backup` e `status=success`.
+
 ### Segurança
 
 - credenciais armazenadas exclusivamente em GitHub Secrets durante a automação;
@@ -326,6 +370,12 @@ scripts/upload_backup.sh       upload e confirmação no R2
 scripts/apply_retention.sh     limpeza segura de backups expirados
 scripts/restore_backup.sh      restauração manual protegida
 scripts/test_recovery.sh       teste real em banco isolado
+scripts/observability.sh       logging estruturado e exportacao OTLP/HTTP opcional
+scripts/otel_log.sh            interface de logging para etapas do GitHub Actions
+scripts/otel_export.py         exportador OTLP/HTTP Protobuf baseado no SDK oficial
+scripts/test_observability.sh  teste do console e do acionamento opcional do exportador
+scripts/test_otel_export.py     teste integrado local do payload Protobuf
+requirements-observability.txt dependencias oficiais do OpenTelemetry
 .env.example                   nomes das configurações locais
 .gitignore                     proteção de credenciais e dumps
 ```

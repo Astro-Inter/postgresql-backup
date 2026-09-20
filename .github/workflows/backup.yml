@@ -38,9 +38,46 @@ jobs:
       BACKUP_RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS || '7' }}
       POSTGRESQL_CLIENT_MAJOR: "17"
 
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.GRAFANA_OTLP_ENDPOINT }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.GRAFANA_OTLP_HEADERS }}
+      OTEL_EXPORTER_OTLP_TIMEOUT: "5"
+      OTEL_SERVICE_VERSION: ${{ github.sha }}
+      OTEL_JOB_NAME: backup-postgresql
+      OTEL_WORKER_NAME: github-actions
+
     steps:
       - name: Obter codigo do repositorio
         uses: actions/checkout@v4
+
+      - name: Preparar Python para OpenTelemetry
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-observability.txt
+
+      - name: Instalar dependencias de observabilidade
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" && -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
+            python3 -m pip install \
+              --disable-pip-version-check \
+              --requirement requirements-observability.txt
+          else
+            echo "Grafana nao configurado; dependencias OTLP nao sao necessarias."
+          fi
+
+      - name: Testar configuracao de observabilidade
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test_observability.sh
+          if python3 -c 'import opentelemetry.sdk, opentelemetry.exporter.otlp.proto.http' >/dev/null 2>&1; then
+            python3 scripts/test_otel_export.py
+          else
+            echo "Teste integrado OTLP ignorado: dependencias opcionais nao instaladas."
+          fi
 
       - name: Preparar cliente PostgreSQL e verificar AWS CLI
         shell: bash
@@ -94,6 +131,20 @@ jobs:
 
           echo "Configuracoes obrigatorias presentes. Os valores permanecem protegidos."
 
+          if [[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" && -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
+            bash scripts/otel_log.sh INFO \
+              "Exportacao de logs OTLP habilitada" \
+              observability-config success
+          elif [[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" || -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
+            bash scripts/otel_log.sh WARN \
+              "Configuracao OTLP incompleta; os logs permanecerao somente no console" \
+              observability-config disabled
+          else
+            bash scripts/otel_log.sh INFO \
+              "Exportacao OTLP nao configurada; os logs permanecerao somente no console" \
+              observability-config disabled
+          fi
+
       - name: Definir nome do backup
         shell: bash
         run: |
@@ -109,44 +160,62 @@ jobs:
             echo "BACKUP_OBJECT_KEY=${object_key}"
           } >> "$GITHUB_ENV"
 
-          echo "Inicio do backup: $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z')"
-          echo "Arquivo: ${backup_name}"
+          bash scripts/otel_log.sh INFO \
+            "Inicio do backup em $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z'); arquivo ${backup_name}" \
+            backup running
 
       - name: Gerar backup logico
         shell: bash
         run: |
           set -euo pipefail
 
-          pg_dump \
-            --host="$AIVEN_PG_HOST" \
-            --port="$AIVEN_PG_PORT" \
-            --username="$AIVEN_PG_USER" \
-            --dbname="$AIVEN_PG_DATABASE" \
-            --format=custom \
-            --no-password \
-            --file="$BACKUP_FILE"
+          started_at_ms="$(date +%s%3N)"
+          if ! pg_dump \
+              --host="$AIVEN_PG_HOST" \
+              --port="$AIVEN_PG_PORT" \
+              --username="$AIVEN_PG_USER" \
+              --dbname="$AIVEN_PG_DATABASE" \
+              --format=custom \
+              --no-password \
+              --file="$BACKUP_FILE"; then
+            bash scripts/otel_log.sh ERROR "pg_dump falhou" pg-dump error
+            exit 1
+          fi
 
           [[ -f "$BACKUP_FILE" ]] || {
-            echo "::error::O pg_dump terminou sem criar o arquivo de backup."
+            bash scripts/otel_log.sh ERROR \
+              "O pg_dump terminou sem criar o arquivo de backup" \
+              pg-dump error
             exit 1
           }
 
           [[ -s "$BACKUP_FILE" ]] || {
-            echo "::error::O pg_dump criou um arquivo vazio."
+            bash scripts/otel_log.sh ERROR \
+              "O pg_dump criou um arquivo vazio" \
+              pg-dump error
             exit 1
           }
 
           backup_size_bytes="$(stat --format='%s' "$BACKUP_FILE")"
           backup_size_human="$(du --human-readable "$BACKUP_FILE" | cut -f1)"
-          echo "pg_dump concluido com sucesso."
-          echo "Tamanho do backup: ${backup_size_human} (${backup_size_bytes} bytes)"
+          duration_ms="$(( $(date +%s%3N) - started_at_ms ))"
+          bash scripts/otel_log.sh INFO \
+            "pg_dump concluido; tamanho ${backup_size_human} (${backup_size_bytes} bytes)" \
+            pg-dump success "$duration_ms"
 
       - name: Validar integridade do arquivo
         shell: bash
         run: |
           set -euo pipefail
-          pg_restore --list "$BACKUP_FILE" >/dev/null
-          echo "Arquivo reconhecido pelo pg_restore como PostgreSQL custom dump."
+          if ! pg_restore --list "$BACKUP_FILE" >/dev/null; then
+            bash scripts/otel_log.sh ERROR \
+              "O arquivo nao foi reconhecido como PostgreSQL custom dump" \
+              backup-validation error
+            exit 1
+          fi
+          bash scripts/otel_log.sh INFO \
+            "Arquivo reconhecido pelo pg_restore como PostgreSQL custom dump" \
+            backup-validation success
 
       - name: Enviar backup ao Cloudflare R2
         shell: bash
@@ -164,9 +233,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Backup concluido com sucesso."
-          echo "Objeto armazenado: ${BACKUP_OBJECT_KEY}"
-          echo "Horario de conclusao: $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z')"
+          bash scripts/otel_log.sh INFO \
+            "Backup concluido; objeto ${BACKUP_OBJECT_KEY}; horario $(TZ=America/Sao_Paulo date +'%Y-%m-%d %H:%M:%S %Z')" \
+            backup success
+
+      - name: Registrar falha do job
+        if: failure()
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [[ -f scripts/otel_log.sh ]]; then
+            bash scripts/otel_log.sh ERROR \
+              "Job de backup interrompido com falha; consulte o log do GitHub Actions" \
+              backup error
+          fi
 
       - name: Remover arquivo temporario do runner
         if: always()
