@@ -59,6 +59,7 @@ def main() -> int:
                 "GITHUB_ACTIONS": "true",
                 "OTEL_SERVICE_VERSION": "test-version",
                 "OTEL_JOB_NAME": "test-job",
+                "OTEL_RUN_ID": "test-run-42",
             }
         )
         exporter = Path(__file__).with_name("otel_export.py")
@@ -115,6 +116,7 @@ def main() -> int:
         assert log_record.body.string_value == "Falha controlada"
         assert log_attributes["job.name"] == "test-job"
         assert log_attributes["worker.name"] == "test-worker"
+        assert log_attributes["run_id"] == "test-run-42"
         assert log_attributes["operation"] == "test-export"
         assert log_attributes["status"] == "error"
         assert log_attributes["duration_ms"] == 12

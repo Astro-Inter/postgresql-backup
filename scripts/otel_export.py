@@ -68,6 +68,7 @@ def main() -> int:
     log_attributes: dict[str, str | int] = {
         "job.name": os.environ.get("OTEL_JOB_NAME", "postgresql-backup"),
         "worker.name": args.worker,
+        "run_id": os.environ.get("OTEL_RUN_ID", "unknown"),
     }
     if args.operation:
         log_attributes["operation"] = args.operation
