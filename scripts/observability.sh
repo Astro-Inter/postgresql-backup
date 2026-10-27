@@ -13,6 +13,8 @@ OTEL_SERVICE_VERSION="${OTEL_SERVICE_VERSION:-${GITHUB_SHA:-}}"
 OTEL_JOB_NAME="${OTEL_JOB_NAME:-postgresql-backup}"
 OTEL_CURRENT_WORKER="${OTEL_WORKER_NAME:-shell}"
 OTEL_EXPORT_WARNING_REPORTED=0
+OTEL_RUN_ID="${GITHUB_RUN_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)-$$}-${GITHUB_RUN_ATTEMPT:-1}"
+export OTEL_RUN_ID
 OTEL_OBSERVABILITY_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 otel_init() {
@@ -144,7 +146,8 @@ otel_log() {
     otel_json_escape "$status"
     printf ',"status":"%s"' "$REPLY"
   fi
-  printf '}\n'
+  otel_json_escape "$OTEL_RUN_ID"
+  printf ',"run_id":"%s"}\n' "$REPLY"
 
   otel_export "$level" "$message" "$operation" "$status" "$duration_ms"
   return 0

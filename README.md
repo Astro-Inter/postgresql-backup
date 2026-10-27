@@ -379,3 +379,7 @@ requirements-observability.txt dependencias oficiais do OpenTelemetry
 .env.example                   nomes das configurações locais
 .gitignore                     proteção de credenciais e dumps
 ```
+
+## Diagnóstico operacional
+
+Consulte [os campos e limites dos novos diagnósticos](docs/observability-diagnostics.md) para investigar falhas por requisição ou execução no Grafana.
